@@ -15,7 +15,27 @@ dotenv.config();
 const app = express();
 
 // Middleware
-app.use(cors());
+const allowedOrigins = [
+  'https://vtu-app-mih3.onrender.com',
+  'https://qr-code-040t.onrender.com', // Backend server
+  'http://localhost:5000', // Local backend server
+  'http://localhost:19000', // Expo Go app (mobile)
+  'http://localhost:8081', // User app (mobile)
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or Postman)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      return callback(new Error('Not allowed by CORS'));
+    }
+  },
+  methods: ['GET', 'PATCH', 'POST', 'PUT', 'DELETE'], // ✅ Fix here
+  credentials: true,
+}));
 app.use(bodyParser.json());
 
 // Connect MongoDB
