@@ -7,7 +7,8 @@ import {
   getStudentsByFilter,
   getScannedStudents,
   getScannedStudentsByExam,
-  getTeacherAttendanceStats
+  getTeacherAttendanceStats,
+  getMyAssignments
 } from "../Controllers/examAssignmentController.js";
 import { protect, adminOnly, teacherOnly } from "../middleware/authMiddleware.js";
 
@@ -25,7 +26,7 @@ router.get("/students/filter", protect, adminOnly, getStudentsByFilter);
 
 // ==================== TEACHER ROUTES ====================
 // Get teacher's assignments
-router.get("/my-assignments", protect, teacherOnly, getAssignmentDetails);
+router.get("/my-assignments", protect, teacherOnly, getMyAssignments);
 
 // Mark attendance via QR code scan
 router.post("/attendance", protect, teacherOnly, markAttendanceByQR);

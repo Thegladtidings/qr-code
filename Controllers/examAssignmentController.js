@@ -136,9 +136,39 @@ export const markAttendanceByQR = async (req, res) => {
 };
 
 // Get assignment details (for viewing)
+export const getMyAssignments = async (req, res) => {
+  try {
+    const teacherId = req.user._id; // or req.user.id, depending on your auth setup
+    
+    const assignments = await ExamAssignment.find({ teacher: teacherId })
+      .populate('exam')
+      .populate('hall')
+      .populate('teacher')
+      .populate('students.student')
+      .sort({ createdAt: -1 }); // Most recent first
+    
+    if (!assignments || assignments.length === 0) {
+      return res.status(404).json({ 
+        message: 'No assignments found for this teacher' 
+      });
+    }
+
+    res.json(assignments);
+  } catch (error) {
+    console.error('Error fetching teacher assignments:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
 export const getAssignmentDetails = async (req, res) => {
   try {
-    const assignment = await ExamAssignment.findById(req.params.id)
+    const { id } = req.params;
+    
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: 'Invalid assignment ID format' });
+    }
+
+    const assignment = await ExamAssignment.findById(id)
       .populate('exam')
       .populate('hall')
       .populate('teacher')
@@ -148,13 +178,20 @@ export const getAssignmentDetails = async (req, res) => {
       return res.status(404).json({ message: 'Assignment not found' });
     }
 
+    // Optional: Verify teacher owns this assignment
+    if (req.user.role === 'teacher' && 
+        assignment.teacher._id.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ 
+        message: 'Not authorized to view this assignment' 
+      });
+    }
+
     res.json(assignment);
   } catch (error) {
+    console.error('Error fetching assignment details:', error);
     res.status(500).json({ message: error.message });
   }
 };
-// Add these new controllers to your examController.js
-
 // Get all registered students (for Admin)
 export const getAllRegisteredStudents = async (req, res) => {
   try {
