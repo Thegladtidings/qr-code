@@ -153,3 +153,245 @@ export const getAssignmentDetails = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+// Add these new controllers to your examController.js
+
+// Get all registered students (for Admin)
+export const getAllRegisteredStudents = async (req, res) => {
+  try {
+    // Check if user is admin (assuming you have role-based auth)
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ 
+        message: "Access denied. Admin privileges required." 
+      });
+    }
+
+    // Get all students from the Student model
+    const students = await Student.find()
+      .select('name matric email level department createdAt')
+      .sort({ createdAt: -1 });
+
+    // Get count of students
+    const totalStudents = await Student.countDocuments();
+
+    res.json({
+      message: "All registered students retrieved successfully",
+      totalStudents,
+      students
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Get students by specific criteria (for Admin)
+export const getStudentsByFilter = async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ 
+        message: "Access denied. Admin privileges required." 
+      });
+    }
+
+    const { level, department, search } = req.query;
+    let filter = {};
+
+    // Build filter object
+    if (level) filter.level = level;
+    if (department) filter.department = department;
+    if (search) {
+      filter.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { matric: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const students = await Student.find(filter)
+      .select('name matric email level department createdAt')
+      .sort({ createdAt: -1 });
+
+    res.json({
+      message: "Filtered students retrieved successfully",
+      count: students.length,
+      students
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Get all scanned students for a teacher
+export const getScannedStudents = async (req, res) => {
+  try {
+    // Find all assignments where the teacher is assigned
+    const assignments = await ExamAssignment.find({ 
+      teacher: req.user._id 
+    })
+      .populate('exam', 'courseCode courseTitle date startTime endTime')
+      .populate('hall', 'name location')
+      .populate('students.student', 'name matric email level')
+      .sort({ assignedAt: -1 });
+
+    // Extract and organize scanned students
+    let scannedStudents = [];
+    let totalScanned = 0;
+    let totalAssigned = 0;
+
+    assignments.forEach(assignment => {
+      const presentStudents = assignment.students.filter(s => s.isPresent);
+      totalScanned += presentStudents.length;
+      totalAssigned += assignment.students.length;
+
+      presentStudents.forEach(s => {
+        scannedStudents.push({
+          student: s.student,
+          exam: assignment.exam,
+          hall: assignment.hall,
+          scannedAt: assignment.assignedAt,
+          assignmentId: assignment._id
+        });
+      });
+    });
+
+    res.json({
+      message: "Scanned students retrieved successfully",
+      summary: {
+        totalAssignments: assignments.length,
+        totalStudentsAssigned: totalAssigned,
+        totalStudentsScanned: totalScanned,
+        attendanceRate: totalAssigned > 0 
+          ? ((totalScanned / totalAssigned) * 100).toFixed(2) + '%' 
+          : '0%'
+      },
+      scannedStudents
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Get scanned students for a specific exam/assignment (for Teacher)
+export const getScannedStudentsByExam = async (req, res) => {
+  try {
+    const { examId } = req.params;
+
+    // Find assignments for this exam and this teacher
+    const assignments = await ExamAssignment.find({
+      teacher: req.user._id,
+      exam: examId
+    })
+      .populate('exam', 'courseCode courseTitle date startTime endTime')
+      .populate('hall', 'name location')
+      .populate('students.student', 'name matric email level')
+      .sort({ assignedAt: -1 });
+
+    if (!assignments || assignments.length === 0) {
+      return res.status(404).json({ 
+        message: "No assignments found for this exam" 
+      });
+    }
+
+    // Get all students (both scanned and not scanned)
+    let allStudents = [];
+    let scannedCount = 0;
+    let notScannedCount = 0;
+
+    assignments.forEach(assignment => {
+      assignment.students.forEach(s => {
+        allStudents.push({
+          student: s.student,
+          isPresent: s.isPresent,
+          exam: assignment.exam,
+          hall: assignment.hall,
+          assignmentId: assignment._id
+        });
+
+        if (s.isPresent) {
+          scannedCount++;
+        } else {
+          notScannedCount++;
+        }
+      });
+    });
+
+    res.json({
+      message: "Students for exam retrieved successfully",
+      summary: {
+        totalStudents: allStudents.length,
+        scannedStudents: scannedCount,
+        notScannedStudents: notScannedCount,
+        attendanceRate: allStudents.length > 0 
+          ? ((scannedCount / allStudents.length) * 100).toFixed(2) + '%' 
+          : '0%'
+      },
+      students: allStudents,
+      examDetails: assignments[0]?.exam
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Get attendance statistics for teacher's dashboard
+export const getTeacherAttendanceStats = async (req, res) => {
+  try {
+    const assignments = await ExamAssignment.find({ 
+      teacher: req.user._id 
+    })
+      .populate('exam', 'courseCode courseTitle date')
+      .populate('students.student');
+
+    let stats = {
+      totalExams: assignments.length,
+      totalStudentsAssigned: 0,
+      totalStudentsPresent: 0,
+      examBreakdown: []
+    };
+
+    // Group by exam
+    const examMap = new Map();
+
+    assignments.forEach(assignment => {
+      const examId = assignment.exam._id.toString();
+      
+      if (!examMap.has(examId)) {
+        examMap.set(examId, {
+          exam: assignment.exam,
+          totalAssigned: 0,
+          totalPresent: 0
+        });
+      }
+
+      const examStats = examMap.get(examId);
+      examStats.totalAssigned += assignment.students.length;
+      examStats.totalPresent += assignment.students.filter(s => s.isPresent).length;
+
+      stats.totalStudentsAssigned += assignment.students.length;
+      stats.totalStudentsPresent += assignment.students.filter(s => s.isPresent).length;
+    });
+
+    // Convert map to array
+    examMap.forEach((value) => {
+      stats.examBreakdown.push({
+        exam: value.exam,
+        assigned: value.totalAssigned,
+        present: value.totalPresent,
+        attendanceRate: value.totalAssigned > 0 
+          ? ((value.totalPresent / value.totalAssigned) * 100).toFixed(2) + '%' 
+          : '0%'
+      });
+    });
+
+    stats.overallAttendanceRate = stats.totalStudentsAssigned > 0 
+      ? ((stats.totalStudentsPresent / stats.totalStudentsAssigned) * 100).toFixed(2) + '%' 
+      : '0%';
+
+    res.json({
+      message: "Attendance statistics retrieved successfully",
+      stats
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
