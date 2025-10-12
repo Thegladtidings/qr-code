@@ -138,14 +138,26 @@ export const markAttendanceByQR = async (req, res) => {
 // Get assignment details (for viewing)
 export const getMyAssignments = async (req, res) => {
   try {
-    const teacherId = req.user._id; // or req.user.id, depending on your auth setup
+    const teacherId = req.user._id;
     
     const assignments = await ExamAssignment.find({ teacher: teacherId })
-      .populate('exam')
-      .populate('hall')
-      .populate('teacher')
-      .populate('students.student')
-      .sort({ createdAt: -1 }); // Most recent first
+      .populate({
+        path: 'exam',
+        select: 'courseCode courseTitle examDate startTime endTime duration'
+      })
+      .populate({
+        path: 'hall',
+        select: 'name capacity building floor'
+      })
+      .populate({
+        path: 'teacher',
+        select: 'name email'
+      })
+      .populate({
+        path: 'students.student',
+        select: 'name matricNumber email'
+      })
+      .sort({ 'exam.examDate': 1, 'exam.startTime': 1 }); // Sort by date and time
     
     if (!assignments || assignments.length === 0) {
       return res.status(404).json({ 
@@ -153,13 +165,20 @@ export const getMyAssignments = async (req, res) => {
       });
     }
 
-    res.json(assignments);
+    // Remove duplicates based on exam + hall combination
+    const uniqueAssignments = assignments.filter((assignment, index, self) =>
+      index === self.findIndex((a) => (
+        a.exam._id.toString() === assignment.exam._id.toString() &&
+        a.hall._id.toString() === assignment.hall._id.toString()
+      ))
+    );
+
+    res.json(uniqueAssignments);
   } catch (error) {
     console.error('Error fetching teacher assignments:', error);
     res.status(500).json({ message: error.message });
   }
 };
-
 export const getAssignmentDetails = async (req, res) => {
   try {
     const { id } = req.params;
@@ -432,3 +451,226 @@ export const getTeacherAttendanceStats = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+
+
+// ADD THIS NEW BULK ASSIGNMENT FUNCTION
+export const createBulkExamAssignment = async (req, res) => {
+  try {
+    const { studentIds, examId, hallId, teacherId } = req.body;
+
+    // Validate required fields
+    if (!studentIds || !Array.isArray(studentIds) || studentIds.length === 0) {
+      return res.status(400).json({ 
+        message: 'Student IDs array is required and must not be empty' 
+      });
+    }
+
+    if (!examId || !hallId || !teacherId) {
+      return res.status(400).json({ 
+        message: 'Exam, hall, and teacher are required' 
+      });
+    }
+
+    // Fetch exam, hall, and teacher details (verify they exist)
+    const exam = await Exam.findById(examId);
+    const hall = await Hall.findById(hallId);
+    const teacher = await User.findById(teacherId);
+
+    if (!exam || !hall || !teacher) {
+      return res.status(404).json({ 
+        message: "Exam, hall, or teacher not found" 
+      });
+    }
+
+    const results = {
+      success: [],
+      failed: [],
+    };
+
+    // Process each student
+    for (const studentId of studentIds) {
+      try {
+        // Fetch student
+        const student = await Student.findById(studentId);
+        
+        if (!student) {
+          results.failed.push({
+            studentId,
+            error: 'Student not found',
+          });
+          continue;
+        }
+
+        // Check if assignment already exists for this student and exam
+        const existingAssignment = await ExamAssignment.findOne({
+          exam: examId,
+          'students.student': studentId,
+        });
+
+        if (existingAssignment) {
+          results.failed.push({
+            studentId,
+            error: 'Assignment already exists for this student and exam',
+          });
+          continue;
+        }
+
+        // Create assignment for this student
+        const assignment = await ExamAssignment.create({
+          exam: examId,
+          hall: hallId,
+          teacher: teacherId,
+          students: [{ student: studentId, isPresent: false }]
+        });
+
+        // Generate QR code payload
+        const qrPayload = {
+          assignmentId: assignment._id.toString(),
+          exam: {
+            id: exam._id.toString(),
+            courseCode: exam.courseCode,
+            courseTitle: exam.courseTitle,
+            date: exam.date,
+            startTime: exam.startTime,
+            endTime: exam.endTime
+          },
+          hall: {
+            id: hall._id.toString(),
+            name: hall.name,
+            location: hall.location,
+            capacity: hall.capacity
+          },
+          teacher: {
+            id: teacher._id.toString(),
+            name: teacher.name,
+            email: teacher.email,
+            department: teacher.department
+          },
+          students: [{
+            id: student._id.toString(),
+            name: student.name,
+            matric: student.matric,
+            email: student.email,
+            level: student.level
+          }],
+          assignedAt: assignment.assignedAt
+        };
+
+        // Generate QR code
+        const qrCodeData = await QRCode.toDataURL(JSON.stringify(qrPayload));
+        
+        assignment.qrCode = qrCodeData;
+        await assignment.save();
+
+        // Add to success results
+        results.success.push({
+          studentId,
+          assignment: {
+            _id: assignment._id,
+            qrCode: assignment.qrCode,
+            assignedAt: assignment.assignedAt,
+          },
+        });
+
+      } catch (error) {
+        console.error(`Error creating assignment for student ${studentId}:`, error);
+        results.failed.push({
+          studentId,
+          error: error.message || 'Failed to create assignment',
+        });
+      }
+    }
+
+    res.status(200).json(results);
+  } catch (error) {
+    console.error('Error in bulk assignment:', error);
+    res.status(500).json({ 
+      message: 'Server error', 
+      error: error.message 
+    });
+  }
+};
+
+// Get all exam assignments (for Admin)
+export const getAllExamAssignments = async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ 
+        message: "Access denied. Admin privileges required." 
+      });
+    }
+
+    const assignments = await ExamAssignment.find()
+      .populate('exam', 'courseCode courseTitle date startTime endTime')
+      .populate('hall', 'name location capacity')
+      .populate('teacher', 'name email department')
+      .populate('students.student', 'name matric email level')
+      .sort({ assignedAt: -1 });
+
+    const totalAssignments = await ExamAssignment.countDocuments();
+
+    res.json({
+      message: "All exam assignments retrieved successfully",
+      totalAssignments,
+      assignments
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Get assignment by ID (for Admin)
+export const getExamAssignmentById = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const assignment = await ExamAssignment.findById(id)
+      .populate('exam')
+      .populate('hall')
+      .populate('teacher')
+      .populate('students.student');
+
+    if (!assignment) {
+      return res.status(404).json({ message: 'Assignment not found' });
+    }
+
+    res.json({
+      message: "Assignment retrieved successfully",
+      assignment
+    });
+  } catch (error) {
+    console.error('Error fetching assignment:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Delete assignment (for Admin)
+export const deleteExamAssignment = async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ 
+        message: "Access denied. Admin privileges required." 
+      });
+    }
+
+    const { id } = req.params;
+
+    const assignment = await ExamAssignment.findByIdAndDelete(id);
+
+    if (!assignment) {
+      return res.status(404).json({ message: 'Assignment not found' });
+    }
+
+    res.json({ 
+      message: 'Assignment deleted successfully',
+      deletedAssignment: assignment
+    });
+  } catch (error) {
+    console.error('Error deleting assignment:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
