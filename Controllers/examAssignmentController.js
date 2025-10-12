@@ -143,11 +143,11 @@ export const getMyAssignments = async (req, res) => {
     const assignments = await ExamAssignment.find({ teacher: teacherId })
       .populate({
         path: 'exam',
-        select: 'courseCode courseTitle examDate startTime endTime duration'
+        select: 'courseCode courseTitle examDate date startTime endTime duration'
       })
       .populate({
         path: 'hall',
-        select: 'name capacity building floor'
+        select: 'name capacity building floor location'
       })
       .populate({
         path: 'teacher',
@@ -155,9 +155,9 @@ export const getMyAssignments = async (req, res) => {
       })
       .populate({
         path: 'students.student',
-        select: 'name matricNumber email'
+        select: 'name matricNumber matric email level'
       })
-      .sort({ 'exam.examDate': 1, 'exam.startTime': 1 }); // Sort by date and time
+      .sort({ createdAt: -1 }); // Sort by creation time
     
     if (!assignments || assignments.length === 0) {
       return res.status(404).json({ 
@@ -165,15 +165,49 @@ export const getMyAssignments = async (req, res) => {
       });
     }
 
-    // Remove duplicates based on exam + hall combination
-    const uniqueAssignments = assignments.filter((assignment, index, self) =>
-      index === self.findIndex((a) => (
-        a.exam._id.toString() === assignment.exam._id.toString() &&
-        a.hall._id.toString() === assignment.hall._id.toString()
-      ))
-    );
+    // FIXED: Merge students from assignments with same exam + hall
+    const mergedAssignments = assignments.reduce((acc, current) => {
+      const examId = current.exam?._id?.toString();
+      const hallId = current.hall?._id?.toString();
+      
+      // Find if we already have an assignment for this exam + hall combo
+      const existingIndex = acc.findIndex(item => 
+        item.exam?._id?.toString() === examId && 
+        item.hall?._id?.toString() === hallId
+      );
+      
+      if (existingIndex === -1) {
+        // No duplicate found, add this assignment
+        acc.push(current);
+      } else {
+        // Duplicate found, merge students
+        const existing = acc[existingIndex];
+        
+        if (current.students && Array.isArray(current.students)) {
+          const existingStudentIds = new Set(
+            existing.students.map(s => s.student?._id?.toString())
+          );
+          
+          // Add students that don't already exist
+          current.students.forEach(studentEntry => {
+            const studentId = studentEntry.student?._id?.toString();
+            if (studentId && !existingStudentIds.has(studentId)) {
+              existing.students.push(studentEntry);
+            }
+          });
+        }
+      }
+      
+      return acc;
+    }, []);
 
-    res.json(uniqueAssignments);
+    console.log(`Total assignments from DB: ${assignments.length}`);
+    console.log(`After merging duplicates: ${mergedAssignments.length}`);
+    console.log(`Total students across all assignments: ${
+      mergedAssignments.reduce((sum, a) => sum + (a.students?.length || 0), 0)
+    }`);
+
+    res.json(mergedAssignments);
   } catch (error) {
     console.error('Error fetching teacher assignments:', error);
     res.status(500).json({ message: error.message });
