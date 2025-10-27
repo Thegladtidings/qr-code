@@ -53,7 +53,7 @@ export const createExamAssignment = async (req, res) => {
       students: [{
         id: student._id.toString(),
         name: student.name,
-        matric: student.matric,
+        matric: student.matricNumber,
         email: student.email,
         level: student.level
       }],
